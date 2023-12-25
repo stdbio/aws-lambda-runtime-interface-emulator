@@ -6,23 +6,19 @@ package main
 import (
 	"net/http"
 
+	"github.com/go-chi/chi"
 	log "github.com/sirupsen/logrus"
 	"go.amzn.com/lambda/interop"
 	"go.amzn.com/lambda/rapidcore"
 )
 
 func startHTTPServer(ipport string, sandbox *rapidcore.SandboxBuilder, bs interop.Bootstrap) {
-	srv := &http.Server{
-		Addr: ipport,
-	}
 
-	// Pass a channel
-	http.HandleFunc("/2015-03-31/functions/function/invocations", func(w http.ResponseWriter, r *http.Request) {
-		InvokeHandler(w, r, sandbox.LambdaInvokeAPI(), bs)
-	})
+	r := chi.NewRouter()
+	r.Post("/2015-03-31/functions/function/invocations", func(w http.ResponseWriter, r *http.Request) { InvokeHandler(w, r, sandbox.LambdaInvokeAPI(), bs) })
+	r.Post("/*", func(w http.ResponseWriter, r *http.Request) { DirectInvokeHandler(w, r, sandbox.LambdaInvokeAPI(), bs) })
 
-	// go routine (main thread waits)
-	if err := srv.ListenAndServe(); err != nil {
+	if err := http.ListenAndServe(ipport, r); err != nil {
 		log.Panic(err)
 	}
 

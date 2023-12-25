@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -19,7 +20,10 @@ import (
 	"go.amzn.com/lambda/rapidcore"
 	"go.amzn.com/lambda/rapidcore/env"
 
+	"github.com/go-chi/chi"
 	"github.com/google/uuid"
+
+	"io"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -70,6 +74,76 @@ func printEndReports(invokeId string, initDuration string, memorySize string, in
 			"Memory Size: %s MB\t"+
 			"Max Memory Used: %s MB\t\n",
 		invokeId, invokeDuration, math.Ceil(invokeDuration), memorySize, memorySize)
+}
+
+type AwsFunctionRequestContext struct {
+	DomainName   string            `json:"domainName"`
+	DomainPrefix string            `json:"domainPrefix"`
+	Http         map[string]string `json:"http"`
+}
+
+type AwsFunctionRequestPayload struct {
+	Method                string                    `json:"method"`
+	RawPath               string                    `json:"rawPath"`
+	RawQueryString        string                    `json:"rawQueryString"`
+	QueryStringParameters map[string]string         `json:"queryStringParameters"`
+	Headers               map[string]string         `json:"headers"`
+	RequestContext        AwsFunctionRequestContext `json:"requestContext"`
+	Body                  string                    `json:"body"`
+	IsBase64Encoded       bool                      `json:"isBase64Encoded"`
+}
+
+// invoke lambda function in function-url style
+// see https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html
+// When a client calls your function URL, Lambda maps the request to an event object before passing it to your function.
+func DirectInvokeHandler(w http.ResponseWriter, r *http.Request, sandbox Sandbox, bs interop.Bootstrap) {
+	// the `DirectInvokeHandler` simply maps request to event object and pass it to `InvokeHandler`
+
+	log.Debugf("invoke: -> %s %s %v", r.Method, r.URL, r.Header)
+	bodyBytes, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Errorf("Failed to read invoke body: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	ctx := AwsFunctionRequestContext{
+		DomainName: r.Host,
+		Http:       map[string]string{},
+	}
+	ctx.Http["method"] = r.Method
+	ctx.Http["path"] = chi.URLParam(r, "rawPath")
+	host_split := strings.Split(r.Host, ".")
+	if len(host_split) > 1 {
+		ctx.DomainPrefix = host_split[0]
+	}
+
+	proxy_req := AwsFunctionRequestPayload{
+		Method:                r.Method,
+		RawPath:               r.URL.Path,
+		RawQueryString:        r.URL.RawQuery,
+		QueryStringParameters: map[string]string{},
+		RequestContext:        ctx,
+		Headers:               map[string]string{},
+		Body:                  string(bodyBytes), IsBase64Encoded: false,
+	}
+
+	for k, vs := range r.URL.Query() {
+		proxy_req.QueryStringParameters[k] = strings.Join(vs, ",")
+	}
+
+	for k, vs := range r.Header {
+		proxy_req.Headers[k] = strings.Join(vs, ",")
+	}
+
+	bodyBytes, err = json.Marshal(proxy_req)
+	fmt.Printf("InvokeHandler with %s \n", bodyBytes)
+	var buf bytes.Buffer
+	buf.Write(bodyBytes)
+	r.Body = io.NopCloser(io.Reader(&buf))
+	r.Header.Set("Content-Length", fmt.Sprint(len(bodyBytes)))
+
+	InvokeHandler(w, r, sandbox, bs)
 }
 
 func InvokeHandler(w http.ResponseWriter, r *http.Request, sandbox Sandbox, bs interop.Bootstrap) {
