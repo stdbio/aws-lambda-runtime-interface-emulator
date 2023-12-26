@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -107,12 +108,14 @@ func DirectInvokeHandler(w http.ResponseWriter, r *http.Request, sandbox Sandbox
 		return
 	}
 
+	rawPath := "/" + chi.URLParam(r, "*")
+
 	ctx := AwsFunctionRequestContext{
 		DomainName: r.Host,
 		Http:       map[string]string{},
 	}
 	ctx.Http["method"] = r.Method
-	ctx.Http["path"] = chi.URLParam(r, "rawPath")
+	ctx.Http["path"] = rawPath
 	host_split := strings.Split(r.Host, ".")
 	if len(host_split) > 1 {
 		ctx.DomainPrefix = host_split[0]
@@ -120,12 +123,13 @@ func DirectInvokeHandler(w http.ResponseWriter, r *http.Request, sandbox Sandbox
 
 	proxy_req := AwsFunctionRequestPayload{
 		Method:                r.Method,
-		RawPath:               r.URL.Path,
+		RawPath:               rawPath,
 		RawQueryString:        r.URL.RawQuery,
 		QueryStringParameters: map[string]string{},
 		RequestContext:        ctx,
 		Headers:               map[string]string{},
-		Body:                  string(bodyBytes), IsBase64Encoded: false,
+		Body:                  base64.StdEncoding.EncodeToString(bodyBytes),
+		IsBase64Encoded:       true,
 	}
 
 	for k, vs := range r.URL.Query() {
@@ -137,7 +141,12 @@ func DirectInvokeHandler(w http.ResponseWriter, r *http.Request, sandbox Sandbox
 	}
 
 	bodyBytes, err = json.Marshal(proxy_req)
-	fmt.Printf("InvokeHandler with %s \n", bodyBytes)
+	if err != nil {
+		log.Errorf("Failed json.Marshal proxy_req: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
 	var buf bytes.Buffer
 	buf.Write(bodyBytes)
 	r.Body = io.NopCloser(io.Reader(&buf))
